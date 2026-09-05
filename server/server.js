@@ -1,5 +1,6 @@
 const express = require('express');
-const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -11,6 +12,8 @@ const db = require('./database');
 const { generateToken, hashToken, requireAuth, JWT_SECRET, REFRESH_TOKEN_EXPIRY } = require('./auth');
 
 const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
 
@@ -36,14 +39,29 @@ const storage = multer.diskStorage({
 // Up to 50MB file uploads
 const upload = multer({
   storage: storage,
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+    const blockedExtensions = new Set(['.html', '.htm', '.js', '.mjs', '.cjs', '.svg', '.xml']);
+    const blockedMimeTypes = new Set([
+      'text/html',
+      'text/javascript',
+      'application/javascript',
+      'application/x-javascript',
+      'image/svg+xml',
+      'application/xml'
+    ]);
+
+    if (blockedExtensions.has(extension) || blockedMimeTypes.has(file.mimetype.toLowerCase())) {
+      return cb(new Error('This file type is not allowed for security reasons.'));
+    }
+
+    cb(null, true);
+  },
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 // Middleware
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
+app.use(helmet());
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -54,14 +72,14 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 const ACCESS_TOKEN_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  sameSite: 'strict',
   maxAge: 15 * 60 * 1000
 };
 
 const REFRESH_TOKEN_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  sameSite: 'strict',
   maxAge: 30 * 24 * 60 * 60 * 1000
 };
 
@@ -87,11 +105,25 @@ async function issueSession(res, user) {
 
   return {
     success: true,
-    user: { id: user.id, username: user.username, is_admin: Boolean(user.is_admin) },
-    accessToken,
-    refreshToken
+    user: { id: user.id, username: user.username, is_admin: Boolean(user.is_admin) }
   };
 }
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many authentication attempts. Please try again later.' }
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many uploads. Please try again later.' }
+});
 
 function ensureAdmin(req, res, next) {
   if (!req.user || !req.user.isAdmin) {
@@ -105,7 +137,7 @@ function ensureAdmin(req, res, next) {
 // ==========================================================
 
 // Register a new user
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -140,7 +172,7 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // Login
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -167,9 +199,9 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.post('/api/auth/refresh', async (req, res) => {
+app.post('/api/auth/refresh', authLimiter, async (req, res) => {
   try {
-    const refreshToken = req.cookies.refresh_token || req.body.refreshToken || req.headers['x-refresh-token'];
+    const refreshToken = req.cookies.refresh_token;
     if (!refreshToken) {
       return res.status(401).json({ success: false, error: 'Refresh token required.' });
     }
@@ -358,7 +390,7 @@ app.put('/api/text/:id', requireAuth, async (req, res) => {
 });
 
 // Upload files and images
-app.post('/api/upload', requireAuth, (req, res, next) => {
+app.post('/api/upload', uploadLimiter, requireAuth, (req, res, next) => {
   upload.array('files', 20)(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
@@ -430,7 +462,8 @@ app.get('/api/view/:id', requireAuth, async (req, res) => {
     }
 
     res.setHeader('Content-Type', item.mime_type || 'application/octet-stream');
-    res.setHeader('Content-Disposition', 'inline');
+    const isSafeInlineImage = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'].includes(item.mime_type);
+    res.setHeader('Content-Disposition', isSafeInlineImage ? 'inline' : 'attachment');
     res.sendFile(filePath);
   } catch (error) {
     console.error('Error viewing item:', error);

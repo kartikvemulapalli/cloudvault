@@ -48,6 +48,20 @@ A private, self-hosted web application for storing text notes, images, and docum
    http://localhost:5000
    ```
 
+### Production environment variables
+
+Configure these variables in Render before deploying:
+
+```text
+NODE_ENV=production
+JWT_SECRET=<a random secret at least 32 characters long>
+DATA_DIR=/var/data
+UPLOADS_DIR=/var/data/uploads
+```
+
+Mount a Render persistent disk at `/var/data`. Without a persistent disk, the
+SQLite database and uploaded files can be lost when the service restarts.
+
 ---
 
 ## 📂 Project Structure

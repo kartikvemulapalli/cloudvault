@@ -1,7 +1,11 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'cloudvault-secret-key-2026-production-ready';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET must be configured and at least 32 characters long.');
+}
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY = '30d';
 
@@ -31,8 +35,6 @@ function requireAuth(req, res, next) {
     token = req.cookies.token;
   } else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
-  } else if (req.query && req.query.token) {
-    token = req.query.token;
   }
 
   if (!token) {
